@@ -94,6 +94,9 @@ func showSyncStatus() error {
 			sessionPrefix = sessionPrefix[:8]
 		}
 		fmt.Printf("Session: %s\n", sessionPrefix)
+		if state.Provider != "" {
+			fmt.Printf("  Provider: %s\n", state.Provider)
+		}
 		fmt.Printf("  Status:  %s\n", status)
 		fmt.Printf("  PID:     %d\n", state.PID)
 		fmt.Printf("  Started: %s\n", state.StartedAt.Format(time.RFC3339))

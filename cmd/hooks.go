@@ -5,8 +5,11 @@ import (
 
 	"github.com/ConfabulousDev/confab/pkg/config"
 	"github.com/ConfabulousDev/confab/pkg/logger"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/spf13/cobra"
 )
+
+var hooksProviderName string
 
 var hooksCmd = &cobra.Command{
 	Use:   "hooks",
@@ -26,6 +29,13 @@ Installs:
 - UserPromptSubmit hook for prompt logging (debug)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logger.Info("Running hooks add command")
+		providerName, err := provider.NormalizeName(hooksProviderName)
+		if err != nil {
+			return err
+		}
+		if providerName == provider.NameCodex {
+			return installCodexHooks()
+		}
 
 		fmt.Println("Installing sync hooks (SessionStart + SessionEnd)...")
 		if err := config.InstallSyncHooks(); err != nil {
@@ -70,6 +80,13 @@ var hooksRemoveCmd = &cobra.Command{
 	Long:  `Removes all confab hooks from ~/.claude/settings.json.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logger.Info("Running hooks remove command")
+		providerName, err := provider.NormalizeName(hooksProviderName)
+		if err != nil {
+			return err
+		}
+		if providerName == provider.NameCodex {
+			return uninstallCodexHooks()
+		}
 
 		fmt.Println("Removing hooks...")
 		if err := config.UninstallSyncHooks(); err != nil {
@@ -102,7 +119,38 @@ var hooksRemoveCmd = &cobra.Command{
 	},
 }
 
+func installCodexHooks() error {
+	fmt.Println("Installing Codex hooks...")
+	fmt.Println("Enabling Codex feature flag: features.codex_hooks = true")
+
+	configPath, err := provider.Codex{}.InstallHooks()
+	if err != nil {
+		logger.Error("Failed to install Codex hooks: %v", err)
+		return fmt.Errorf("failed to install Codex hooks: %w", err)
+	}
+
+	logger.Info("Codex hooks installed in %s", configPath)
+	fmt.Printf("✓ Codex hooks installed in %s\n", configPath)
+	fmt.Println()
+	fmt.Println("Confab will now dry-run sync Codex rollout files locally.")
+	fmt.Println("No Codex sessions are uploaded to the backend in this phase.")
+	return nil
+}
+
+func uninstallCodexHooks() error {
+	fmt.Println("Removing Codex hooks...")
+	configPath, err := provider.Codex{}.UninstallHooks()
+	if err != nil {
+		logger.Error("Failed to remove Codex hooks: %v", err)
+		return fmt.Errorf("failed to remove Codex hooks: %w", err)
+	}
+	logger.Info("Codex hooks removed from %s", configPath)
+	fmt.Printf("✓ Codex hooks removed from %s\n", configPath)
+	return nil
+}
+
 func init() {
+	hooksCmd.PersistentFlags().StringVar(&hooksProviderName, "provider", provider.NameClaudeCode, "Provider to manage hooks for (claude-code or codex)")
 	rootCmd.AddCommand(hooksCmd)
 	hooksCmd.AddCommand(hooksAddCmd)
 	hooksCmd.AddCommand(hooksRemoveCmd)

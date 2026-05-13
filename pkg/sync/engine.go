@@ -20,7 +20,7 @@ import (
 // Engine is the core sync engine used by both daemon and manual save.
 // It provides a unified interface for syncing session data to the backend.
 type Engine struct {
-	client         *Client
+	backend        Backend
 	redactor       *redactor.Redactor
 	tracker        *FileTracker
 	sessionID      string // Backend session ID (set after Init)
@@ -28,6 +28,15 @@ type Engine struct {
 	transcriptPath string
 	cwd            string
 	initialized    bool
+}
+
+// Backend is the sync transport used by Engine. The HTTP client implements this
+// for Claude Code; Codex uses a local dry-run backend until server support exists.
+type Backend interface {
+	Init(externalID, transcriptPath string, metadata *InitMetadata) (*InitResponse, error)
+	UploadChunk(sessionID, fileName, fileType string, firstLine int, lines []string, metadata *ChunkMetadata) (int, error)
+	SendEvent(sessionID, eventType string, timestamp time.Time, payload json.RawMessage) error
+	UpdateSessionSummary(externalID, summary string) error
 }
 
 // EngineConfig holds configuration for creating an Engine
@@ -58,7 +67,7 @@ func New(uploadCfg *config.UploadConfig, engineCfg EngineConfig) (*Engine, error
 	tracker := NewFileTracker(engineCfg.TranscriptPath)
 
 	return &Engine{
-		client:         client,
+		backend:        client,
 		redactor:       r,
 		tracker:        tracker,
 		externalID:     engineCfg.ExternalID,
@@ -70,10 +79,15 @@ func New(uploadCfg *config.UploadConfig, engineCfg EngineConfig) (*Engine, error
 // NewWithClient creates an engine with a pre-configured client.
 // This is useful for testing with mock clients.
 func NewWithClient(client *Client, r *redactor.Redactor, engineCfg EngineConfig) *Engine {
+	return NewWithBackend(client, r, engineCfg)
+}
+
+// NewWithBackend creates an engine with a preconfigured backend.
+func NewWithBackend(backend Backend, r *redactor.Redactor, engineCfg EngineConfig) *Engine {
 	tracker := NewFileTracker(engineCfg.TranscriptPath)
 
 	return &Engine{
-		client:         client,
+		backend:        backend,
 		redactor:       r,
 		tracker:        tracker,
 		externalID:     engineCfg.ExternalID,
@@ -110,7 +124,7 @@ func (e *Engine) Init() error {
 		Username: username,
 	}
 
-	resp, err := e.client.Init(e.externalID, e.transcriptPath, metadata)
+	resp, err := e.backend.Init(e.externalID, e.transcriptPath, metadata)
 	if err != nil {
 		return err
 	}
@@ -223,7 +237,7 @@ func (e *Engine) SyncAll() (int, error) {
 				}
 
 				// Upload chunk
-				lastLine, err := e.client.UploadChunk(e.sessionID, chunk.FileName, chunk.FileType, chunk.FirstLine, chunk.Lines, chunk.Metadata)
+				lastLine, err := e.backend.UploadChunk(e.sessionID, chunk.FileName, chunk.FileType, chunk.FirstLine, chunk.Lines, chunk.Metadata)
 				if err != nil {
 					logger.Error("Failed to upload chunk: file=%s first_line=%d lines=%d error=%v",
 						chunk.FileName, chunk.FirstLine, len(chunk.Lines), err)
@@ -287,7 +301,7 @@ func (e *Engine) SendSessionEnd(hookInput *types.ClaudeHookInput, timestamp time
 		return fmt.Errorf("failed to marshal hook input: %w", err)
 	}
 
-	if err := e.client.SendEvent(e.sessionID, "session_end", timestamp, payload); err != nil {
+	if err := e.backend.SendEvent(e.sessionID, "session_end", timestamp, payload); err != nil {
 		return fmt.Errorf("failed to send session_end event: %w", err)
 	}
 
@@ -317,7 +331,7 @@ func (e *Engine) Reset() {
 // received data but we didn't get a response (e.g., timeout).
 func (e *Engine) refreshStateFromBackend() error {
 	// Call Init without metadata - we just want to refresh file states
-	resp, err := e.client.Init(e.externalID, e.transcriptPath, nil)
+	resp, err := e.backend.Init(e.externalID, e.transcriptPath, nil)
 	if err != nil {
 		return err
 	}

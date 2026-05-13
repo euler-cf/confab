@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ConfabulousDev/confab/pkg/discovery"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 )
 
 // parseDuration parses a duration string like "5d", "12h", "30m"
@@ -41,7 +42,7 @@ func parseDuration(s string) (time.Duration, error) {
 
 // scanAndFilterSessions scans for sessions and optionally filters by duration.
 // Returns sessions sorted by mod time (most recent first).
-func scanAndFilterSessions(durationStr string) ([]discovery.SessionInfo, error) {
+func scanAndFilterSessions(providerName, durationStr string) ([]discovery.SessionInfo, error) {
 	// Parse duration filter
 	duration, err := parseDuration(durationStr)
 	if err != nil {
@@ -49,7 +50,12 @@ func scanAndFilterSessions(durationStr string) ([]discovery.SessionInfo, error) 
 	}
 
 	// Scan for sessions
-	sessions, err := discovery.ScanAllSessions()
+	var sessions []discovery.SessionInfo
+	if providerName == provider.NameCodex {
+		sessions, err = scanCodexSessions()
+	} else {
+		sessions, err = discovery.ScanAllSessions()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan sessions: %w", err)
 	}
@@ -75,5 +81,29 @@ func scanAndFilterSessions(durationStr string) ([]discovery.SessionInfo, error) 
 		return sessions[i].ModTime.After(sessions[j].ModTime)
 	})
 
+	return sessions, nil
+}
+
+func scanCodexSessions() ([]discovery.SessionInfo, error) {
+	codexSessions, err := provider.Codex{}.ScanSessions()
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make([]discovery.SessionInfo, 0, len(codexSessions))
+	for _, s := range codexSessions {
+		title := s.CWD
+		if title == "" {
+			title = s.Model
+		}
+		sessions = append(sessions, discovery.SessionInfo{
+			SessionID:        s.SessionID,
+			TranscriptPath:   s.RolloutPath,
+			ProjectPath:      s.CWD,
+			ModTime:          s.ModTime,
+			SizeBytes:        s.SizeBytes,
+			FirstUserMessage: title,
+		})
+	}
 	return sessions, nil
 }

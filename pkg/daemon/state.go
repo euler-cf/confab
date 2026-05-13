@@ -14,12 +14,13 @@ import (
 
 // State represents the daemon's persistent state
 type State struct {
+	Provider        string    `json:"provider,omitempty"`
 	ExternalID      string    `json:"external_id"`
 	TranscriptPath  string    `json:"transcript_path"`
 	CWD             string    `json:"cwd"`
 	PID             int       `json:"pid"`
-	ParentPID       int       `json:"parent_pid,omitempty"`        // Claude Code process ID
-	InboxPath       string    `json:"inbox_path"`                  // Path to event inbox (JSONL)
+	ParentPID       int       `json:"parent_pid,omitempty"` // Claude Code process ID
+	InboxPath       string    `json:"inbox_path"`           // Path to event inbox (JSONL)
 	StartedAt       time.Time `json:"started_at"`
 	ConfabSessionID string    `json:"confab_session_id,omitempty"` // Backend session ID (set after Init)
 }
@@ -41,6 +42,22 @@ func NewState(externalID, transcriptPath, cwd string, parentPID int) *State {
 	}
 }
 
+// NewStateForProvider creates a daemon state under a provider namespace.
+func NewStateForProvider(provider, externalID, transcriptPath, cwd string, parentPID int) *State {
+	inboxPath, _ := GetInboxPathForProvider(provider, externalID)
+
+	return &State{
+		Provider:       provider,
+		ExternalID:     externalID,
+		TranscriptPath: transcriptPath,
+		CWD:            cwd,
+		PID:            os.Getpid(),
+		ParentPID:      parentPID,
+		InboxPath:      inboxPath,
+		StartedAt:      time.Now(),
+	}
+}
+
 // GetStatePath returns the path to the state file for a given external ID
 func GetStatePath(externalID string) (string, error) {
 	home, err := os.UserHomeDir()
@@ -50,6 +67,18 @@ func GetStatePath(externalID string) (string, error) {
 	return filepath.Join(home, ".confab", "sync", externalID+".json"), nil
 }
 
+// GetStatePathForProvider returns the namespaced state file path.
+func GetStatePathForProvider(provider, externalID string) (string, error) {
+	if provider == "" {
+		return GetStatePath(externalID)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(home, ".confab", "sync", provider, externalID+".json"), nil
+}
+
 // GetInboxPath returns the path to the event inbox file for a given external ID
 func GetInboxPath(externalID string) (string, error) {
 	home, err := os.UserHomeDir()
@@ -57,6 +86,18 @@ func GetInboxPath(externalID string) (string, error) {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
 	return filepath.Join(home, ".confab", "sync", externalID+".inbox.jsonl"), nil
+}
+
+// GetInboxPathForProvider returns the namespaced inbox file path.
+func GetInboxPathForProvider(provider, externalID string) (string, error) {
+	if provider == "" {
+		return GetInboxPath(externalID)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(home, ".confab", "sync", provider, externalID+".inbox.jsonl"), nil
 }
 
 // GetSyncDir returns the path to the sync state directory
@@ -92,9 +133,64 @@ func LoadState(externalID string) (*State, error) {
 	return &state, nil
 }
 
+// LoadStateForProvider reads a provider-namespaced state file. Claude Code falls
+// back to the legacy flat path so old daemons and existing hooks keep working.
+func LoadStateForProvider(provider, externalID string) (*State, error) {
+	if provider == "" {
+		return LoadState(externalID)
+	}
+
+	path, err := GetStatePathForProvider(provider, externalID)
+	if err != nil {
+		return nil, err
+	}
+
+	state, err := loadStateAt(path)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil {
+		if state.Provider == "" {
+			state.Provider = provider
+		}
+		if provider == "claude-code" && !state.IsDaemonRunning() {
+			legacyState, legacyErr := LoadState(externalID)
+			if legacyErr != nil {
+				return nil, legacyErr
+			}
+			if legacyState != nil && legacyState.IsDaemonRunning() {
+				return legacyState, nil
+			}
+		}
+		return state, nil
+	}
+
+	if provider == "claude-code" {
+		return LoadState(externalID)
+	}
+	return nil, nil
+}
+
+func loadStateAt(path string) (*State, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read sync state file (%s): %w", path, err)
+	}
+
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("sync state file has invalid JSON (%s): %w", path, err)
+	}
+
+	return &state, nil
+}
+
 // Save writes the state to disk
 func (s *State) Save() error {
-	path, err := GetStatePath(s.ExternalID)
+	path, err := GetStatePathForProvider(s.Provider, s.ExternalID)
 	if err != nil {
 		return err
 	}
@@ -127,7 +223,7 @@ func (s *State) Save() error {
 
 // Delete removes the state file from disk
 func (s *State) Delete() error {
-	path, err := GetStatePath(s.ExternalID)
+	path, err := GetStatePathForProvider(s.Provider, s.ExternalID)
 	if err != nil {
 		return err
 	}
@@ -182,22 +278,62 @@ func ListAllStates() ([]*State, error) {
 
 	var states []*State
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		if entry.IsDir() {
+			provider := entry.Name()
+			providerDir := filepath.Join(syncDir, provider)
+			providerStates, err := listStatesInDir(providerDir, provider)
+			if err != nil {
+				logger.Debug("Skipping provider state dir %s: %v", provider, err)
+				continue
+			}
+			states = append(states, providerStates...)
 			continue
 		}
 
-		// Extract external ID from filename
-		externalID := strings.TrimSuffix(entry.Name(), ".json")
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
 
+		externalID := strings.TrimSuffix(entry.Name(), ".json")
 		state, err := LoadState(externalID)
 		if err != nil {
 			logger.Debug("Skipping invalid state file %s: %v", externalID, err)
 			continue
+		}
+		if state != nil && state.Provider == "" {
+			state.Provider = "claude-code"
 		}
 		if state != nil {
 			states = append(states, state)
 		}
 	}
 
+	return states, nil
+}
+
+func listStatesInDir(dir, provider string) ([]*State, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var states []*State
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		state, err := loadStateAt(path)
+		if err != nil {
+			logger.Debug("Skipping invalid state file %s: %v", path, err)
+			continue
+		}
+		if state != nil {
+			if state.Provider == "" {
+				state.Provider = provider
+			}
+			states = append(states, state)
+		}
+	}
 	return states, nil
 }

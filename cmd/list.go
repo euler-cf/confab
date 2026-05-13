@@ -5,11 +5,13 @@ import (
 	"time"
 
 	"github.com/ConfabulousDev/confab/pkg/discovery"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/ConfabulousDev/confab/pkg/utils"
 	"github.com/spf13/cobra"
 )
 
 var listDuration string
+var listProviderName string
 
 var listCmd = &cobra.Command{
 	Use:   "list",
@@ -25,13 +27,17 @@ Examples:
   confab list -d 12h   # List sessions from last 12 hours`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer NotifyIfUpdateAvailable()
-		return listSessions(listDuration)
+		providerName, err := provider.NormalizeName(listProviderName)
+		if err != nil {
+			return err
+		}
+		return listSessions(providerName, listDuration)
 	},
 }
 
 // listSessions scans and displays all local sessions
-func listSessions(durationStr string) error {
-	sessions, err := scanAndFilterSessions(durationStr)
+func listSessions(providerName, durationStr string) error {
+	sessions, err := scanAndFilterSessions(providerName, durationStr)
 	if err != nil {
 		return err
 	}
@@ -39,6 +45,8 @@ func listSessions(durationStr string) error {
 	if len(sessions) == 0 {
 		if durationStr != "" {
 			fmt.Printf("No sessions found within the last %s\n", durationStr)
+		} else if providerName == provider.NameCodex {
+			fmt.Println("No sessions found in ~/.codex/sessions/")
 		} else {
 			fmt.Println("No sessions found in ~/.claude/projects/")
 		}
@@ -46,13 +54,13 @@ func listSessions(durationStr string) error {
 	}
 
 	// Print table
-	printSessionTable(sessions)
+	printSessionTable(providerName, sessions)
 
 	return nil
 }
 
 // printSessionTable displays sessions in a formatted table
-func printSessionTable(sessions []discovery.SessionInfo) {
+func printSessionTable(providerName string, sessions []discovery.SessionInfo) {
 	// Print header
 	fmt.Printf("%-8s  %-50s  %s\n", "ID", "TITLE", "LAST ACTIVITY")
 	fmt.Printf("%-8s  %-50s  %s\n", "--------", "--------------------------------------------------", "-------------")
@@ -63,6 +71,14 @@ func printSessionTable(sessions []discovery.SessionInfo) {
 		fmt.Printf("%-8s  %-50s  %s\n", id, title, activity)
 	}
 
+	if providerName == provider.NameCodex {
+		fmt.Printf("\n%d session(s) found. Use 'confab save --provider codex <id>' to dry-run sync locally.\n", len(sessions))
+		return
+	}
+	if len(sessions) == 1 {
+		fmt.Printf("\n1 session found. Use 'confab save <id>' to upload.\n")
+		return
+	}
 	fmt.Printf("\n%d session(s) found. Use 'confab save <id>' to upload.\n", len(sessions))
 }
 
@@ -110,5 +126,6 @@ func formatDuration(d time.Duration) string {
 
 func init() {
 	listCmd.Flags().StringVarP(&listDuration, "duration", "d", "", "Filter sessions by duration (e.g., 5d, 12h, 30m)")
+	listCmd.Flags().StringVar(&listProviderName, "provider", provider.NameClaudeCode, "Provider to list sessions from (claude-code or codex)")
 	rootCmd.AddCommand(listCmd)
 }

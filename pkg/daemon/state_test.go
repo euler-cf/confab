@@ -78,6 +78,87 @@ func TestState_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestState_SaveAndLoadForProvider(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	state := NewStateForProvider("codex", "test-external-id", "/path/to/rollout.jsonl", "/work/dir", 0)
+	if err := state.Save(); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
+	statePath := filepath.Join(tmpDir, ".confab", "sync", "codex", "test-external-id.json")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("state file not created: %v", err)
+	}
+
+	loaded, err := LoadStateForProvider("codex", "test-external-id")
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded state is nil")
+	}
+	if loaded.Provider != "codex" {
+		t.Fatalf("Provider = %q", loaded.Provider)
+	}
+}
+
+func TestState_LoadClaudeProviderFallsBackToLegacyPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	state := NewState("legacy-claude-id", "/path/to/transcript.jsonl", "/work/dir", 0)
+	if err := state.Save(); err != nil {
+		t.Fatalf("failed to save legacy state: %v", err)
+	}
+
+	loaded, err := LoadStateForProvider("claude-code", "legacy-claude-id")
+	if err != nil {
+		t.Fatalf("failed to load fallback state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded state is nil")
+	}
+	if loaded.ExternalID != "legacy-claude-id" {
+		t.Fatalf("ExternalID = %q", loaded.ExternalID)
+	}
+}
+
+func TestState_LoadClaudeProviderPrefersRunningLegacyOverStaleNamespaced(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	stale := NewStateForProvider("claude-code", "same-id", "/stale", "/cwd", 0)
+	stale.PID = 999999
+	if err := stale.Save(); err != nil {
+		t.Fatalf("failed to save namespaced state: %v", err)
+	}
+
+	legacy := NewState("same-id", "/legacy", "/cwd", 0)
+	legacy.PID = os.Getpid()
+	if err := legacy.Save(); err != nil {
+		t.Fatalf("failed to save legacy state: %v", err)
+	}
+
+	loaded, err := LoadStateForProvider("claude-code", "same-id")
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded state is nil")
+	}
+	if loaded.TranscriptPath != "/legacy" {
+		t.Fatalf("TranscriptPath = %q, want legacy running state", loaded.TranscriptPath)
+	}
+}
+
 func TestState_LoadNonExistent(t *testing.T) {
 	// Create temp directory for test
 	tmpDir := t.TempDir()

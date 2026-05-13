@@ -50,6 +50,27 @@ type ClaudeHookInput struct {
 	ToolResponse map[string]any `json:"tool_response,omitempty"` // PostToolUse only
 }
 
+// CodexHookInput contains the shared fields Confab needs from Codex command
+// hooks. The fields follow the current official Codex hook schemas, while
+// provider-specific parsing owns validation.
+type CodexHookInput struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd"`
+	HookEventName  string `json:"hook_event_name"`
+	Model          string `json:"model,omitempty"`
+	Source         string `json:"source,omitempty"`
+	TurnID         string `json:"turn_id,omitempty"`
+}
+
+// CodexHookResponse is the JSON response sent back to Codex hooks.
+type CodexHookResponse struct {
+	Continue       bool   `json:"continue"`
+	StopReason     string `json:"stopReason,omitempty"`
+	SystemMessage  string `json:"systemMessage,omitempty"`
+	SuppressOutput bool   `json:"suppressOutput,omitempty"`
+}
+
 // sessionIDPattern validates session IDs contain only safe characters.
 // This prevents path traversal attacks (e.g., "../../tmp/evil") when
 // session IDs are used in file paths.

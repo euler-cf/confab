@@ -197,7 +197,7 @@ func handleMCPPRCreate(hookInput *types.ClaudeHookInput, w io.Writer) error {
 // getConfabSessionID retrieves the Confab session ID from daemon state.
 // Returns empty string if not available.
 func getConfabSessionID(claudeSessionID string) (string, error) {
-	state, err := daemon.LoadState(claudeSessionID)
+	state, err := daemon.LoadStateForProvider(provider.NameClaudeCode, claudeSessionID)
 	if err != nil {
 		return "", err
 	}

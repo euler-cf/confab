@@ -16,6 +16,7 @@ import (
 	"github.com/ConfabulousDev/confab/pkg/config"
 	"github.com/ConfabulousDev/confab/pkg/http"
 	"github.com/ConfabulousDev/confab/pkg/logger"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	pkgsync "github.com/ConfabulousDev/confab/pkg/sync"
 	"github.com/ConfabulousDev/confab/pkg/types"
 )
@@ -53,6 +54,7 @@ var shutdownTimeout = 30 * time.Second
 // gracefully when it exits. This handles cases where Claude Code crashes or
 // is killed without firing the SessionEnd hook.
 type Daemon struct {
+	providerName   string
 	externalID     string
 	transcriptPath string
 	cwd            string
@@ -70,6 +72,7 @@ type Daemon struct {
 
 // Config holds daemon configuration
 type Config struct {
+	Provider           string
 	ExternalID         string
 	TranscriptPath     string
 	CWD                string
@@ -91,7 +94,13 @@ func New(cfg Config) *Daemon {
 		jitter = syncIntervalJitter
 	}
 
+	providerName := cfg.Provider
+	if providerName == "" {
+		providerName = provider.NameClaudeCode
+	}
+
 	return &Daemon{
+		providerName:   providerName,
 		externalID:     cfg.ExternalID,
 		transcriptPath: cfg.TranscriptPath,
 		cwd:            cfg.CWD,
@@ -124,7 +133,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Save state for duplicate detection. Done after transcript exists so we
 	// don't leave stale state files for sessions that never produced transcripts.
-	d.state = NewState(d.externalID, d.transcriptPath, d.cwd, d.parentPID)
+	d.state = NewStateForProvider(d.providerName, d.externalID, d.transcriptPath, d.cwd, d.parentPID)
 	if err := d.state.Save(); err != nil {
 		logger.Warn("Failed to save initial state: %v", err)
 	}
@@ -260,19 +269,26 @@ func (d *Daemon) waitForTranscript(ctx context.Context, sigCh chan os.Signal) er
 // tryInit attempts to initialize the sync engine and session with the backend.
 // Auth is checked here lazily, not at daemon startup.
 func (d *Daemon) tryInit() error {
-	// Get authenticated config (lazy - only when we need to talk to backend)
-	cfg, err := config.EnsureAuthenticated()
-	if err != nil {
-		return fmt.Errorf("not authenticated: %w", err)
-	}
-
 	// Create engine if not already created
 	if d.engine == nil {
-		engine, err := pkgsync.New(cfg, pkgsync.EngineConfig{
+		engineCfg := pkgsync.EngineConfig{
 			ExternalID:     d.externalID,
 			TranscriptPath: d.transcriptPath,
 			CWD:            d.cwd,
-		})
+		}
+
+		var engine *pkgsync.Engine
+		var err error
+		if d.providerName == provider.NameCodex {
+			engine = pkgsync.NewWithBackend(pkgsync.NewDryRunBackend(provider.NameCodex), nil, engineCfg)
+		} else {
+			// Get authenticated config lazily, only when we need to talk to backend.
+			cfg, cfgErr := config.EnsureAuthenticated()
+			if cfgErr != nil {
+				return fmt.Errorf("not authenticated: %w", cfgErr)
+			}
+			engine, err = pkgsync.New(cfg, engineCfg)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to create sync engine: %w", err)
 		}
@@ -435,7 +451,12 @@ func (d *Daemon) cleanupInbox() {
 // If hookInput is provided, it writes a session_end event to the daemon's inbox
 // before signaling, so the daemon can access the full SessionEnd payload.
 func StopDaemon(externalID string, hookInput *types.ClaudeHookInput) error {
-	state, err := LoadState(externalID)
+	return StopDaemonForProvider(provider.NameClaudeCode, externalID, hookInput)
+}
+
+// StopDaemonForProvider sends SIGTERM to a running daemon by provider and external ID.
+func StopDaemonForProvider(providerName, externalID string, hookInput *types.ClaudeHookInput) error {
+	state, err := LoadStateForProvider(providerName, externalID)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}

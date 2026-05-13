@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"io"
 
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/ConfabulousDev/confab/pkg/types"
 	"github.com/spf13/cobra"
 )
+
+var hookProviderName string
 
 // writeClaudeHookResponse writes a standard Claude hook response to the given writer.
 // All hooks must output valid JSON, even on error, so Claude Code can continue.
@@ -18,6 +21,14 @@ func writeClaudeHookResponse(w io.Writer, suppressOutput bool) {
 // The systemMessage is shown as a banner to the user (not added to Claude's context).
 func writeClaudeHookResponseMsg(w io.Writer, suppressOutput bool, systemMessage string) {
 	json.NewEncoder(w).Encode(types.ClaudeHookResponse{
+		Continue:       true,
+		SuppressOutput: suppressOutput,
+		SystemMessage:  systemMessage,
+	})
+}
+
+func writeCodexHookResponse(w io.Writer, suppressOutput bool, systemMessage string) {
+	json.NewEncoder(w).Encode(types.CodexHookResponse{
 		Continue:       true,
 		SuppressOutput: suppressOutput,
 		SystemMessage:  systemMessage,
@@ -41,5 +52,6 @@ Available handlers:
 }
 
 func init() {
+	hookCmd.PersistentFlags().StringVar(&hookProviderName, "provider", provider.NameClaudeCode, "Provider for hook input (claude-code or codex)")
 	rootCmd.AddCommand(hookCmd)
 }

@@ -117,7 +117,7 @@ func (e *Engine) linkSummaryToPreviousSession(summary, leafUUID string) {
 	logger.Info("Linking summary to previous session: %s", previousSessionID)
 
 	// Update the previous session's summary via API
-	if err := e.client.UpdateSessionSummary(previousSessionID, summary); err != nil {
+	if err := e.backend.UpdateSessionSummary(previousSessionID, summary); err != nil {
 		logger.Error("Failed to update summary for session %s: %v", previousSessionID, err)
 		return
 	}

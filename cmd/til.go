@@ -14,6 +14,7 @@ import (
 	"github.com/ConfabulousDev/confab/pkg/daemon"
 	confabhttp "github.com/ConfabulousDev/confab/pkg/http"
 	"github.com/ConfabulousDev/confab/pkg/logger"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/ConfabulousDev/confab/pkg/utils"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +35,7 @@ type tilRequest struct {
 }
 
 type tilResponse struct {
-	ID    int64 `json:"id"`
+	ID    int64  `json:"id"`
 	Title string `json:"title"`
 }
 
@@ -78,7 +79,7 @@ func runTil(session, title, summary string, tags []string) error {
 	}
 
 	// Look up daemon state for this session
-	state, err := daemon.LoadState(session)
+	state, err := daemon.LoadStateForProvider(provider.NameClaudeCode, session)
 	if err != nil {
 		return fmt.Errorf("failed to load session state: %w", err)
 	}

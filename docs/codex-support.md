@@ -54,11 +54,11 @@ Checklist:
 
 - [ ] Backend `tool_name` support: additive request field, backend default for legacy clients, dedup by `(user_id, tool_name, external_id)`.
 - [ ] Cleanup compatibility shims after provider ownership is stable: move remaining path and hook parsing callers directly to provider APIs, then remove wrappers that no runtime code needs.
-- [ ] CLI provider selection: introduce `--tool claude-code|codex` after backend support exists.
-- [ ] Codex provider: implement real Codex paths, hook payload parsing, and hook config writing after reading Codex's current config format.
-- [ ] Codex daemon behavior: watch Codex sessions directory and handle new rollout files without disrupting Claude daemon behavior.
+- [ ] CLI provider selection: introduce `--provider claude-code|codex` surgically on commands with real provider-specific behavior.
+- [ ] Codex provider: implement real Codex paths, rollout discovery, hook payload parsing, and hook config writing from current Codex docs/source.
+- [ ] Codex daemon behavior: run the real daemon lifecycle against Codex rollout files, but route backend calls to a local dry-run backend until backend support exists.
 - [ ] Transcript normalization: add backend and frontend normalization keyed by tool name before enabling analytics/Smart Recap for Codex.
-- [ ] Codex subagents: model separate rollout files and parent relationships after confirming Codex metadata.
+- [ ] Codex subagents: quick-follow TODO. Model separate rollout files and parent relationships from `thread_source=subagent`, `agent_path`, `agent_role`, and `agent_nickname`.
 - [ ] Skills: revisit `/til` and `/retro` separately; Claude slash-command skills should remain Claude-specific until Codex has a well-defined surface.
 
 ## Decisions
@@ -69,6 +69,15 @@ Checklist:
 - Parent PID monitoring remains Claude-specific implementation detail for now.
 - `/til` and `/retro` remain Claude-specific for this phase.
 - Documentation visible to users should remain Claude-specific until Codex support is real.
+- Codex support starts CLI-first but includes the full local lifecycle: discovery, `list`, `save`, daemon dry-run sync, and hook installation.
+- Codex must not make real backend API calls in this phase. Dry-run calls log local operation metadata to the main Confab log and return mocked responses.
+- Codex session identity is parsed from rollout filenames matching `rollout-<timestamp>-<uuid>.jsonl`.
+- Codex rollout `session_meta` is parsed for metadata and top-level filtering. `confab list --provider codex` includes user sessions only: missing/`user` `thread_source`, and no `agent_path`, `agent_role`, or `agent_nickname`.
+- Codex local discovery reads rollout JSONL files only. Do not read Codex SQLite state in the first Codex CLI slice.
+- Codex hook install should match Claude's seamless setup posture: preserve existing user config, make backups, install idempotently, enable `features.codex_hooks = true`, and clearly surface that feature flag change in CLI output.
+- Codex hooks should use existing handler shapes with explicit provider selection, e.g. `confab hook session-start --provider codex`.
+- Provider selection flags should be added only where they have real behavior.
+- Daemon state should be provider-aware going forward, while preserving legacy Claude state file lookup and cleanup for existing users.
 
 ## Compatibility Shims (Future Cleanup)
 

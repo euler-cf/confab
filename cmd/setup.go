@@ -5,8 +5,11 @@ import (
 
 	"github.com/ConfabulousDev/confab/pkg/config"
 	"github.com/ConfabulousDev/confab/pkg/logger"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/spf13/cobra"
 )
+
+var setupProviderName string
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
@@ -25,12 +28,18 @@ Use --api-key to provide an API key directly (bypasses device auth flow).`,
 
 func runSetup(cmd *cobra.Command, args []string) error {
 	logger.Info("Starting setup")
+	providerName, err := provider.NormalizeName(setupProviderName)
+	if err != nil {
+		return err
+	}
+	if providerName == provider.NameCodex {
+		return runCodexSetup()
+	}
 
 	backendURL, err := cmd.Flags().GetString("backend-url")
 	if err != nil {
 		return fmt.Errorf("failed to get backend-url flag: %w", err)
 	}
-
 	apiKey, err := cmd.Flags().GetString("api-key")
 	if err != nil {
 		return fmt.Errorf("failed to get api-key flag: %w", err)
@@ -142,9 +151,28 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runCodexSetup() error {
+	fmt.Println("Setting up Confab for Codex")
+	fmt.Println()
+	fmt.Println("Installing Codex hooks...")
+	fmt.Println("Enabling Codex feature flag: features.codex_hooks = true")
+
+	configPath, err := provider.Codex{}.InstallHooks()
+	if err != nil {
+		logger.Error("Failed to install Codex hooks: %v", err)
+		return fmt.Errorf("failed to install Codex hooks: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("✅ Setup complete. Codex dry-run sync hooks installed in %s\n", configPath)
+	fmt.Println("Codex sessions will be logged locally and will not be uploaded to the backend yet.")
+	return nil
+}
+
 func init() {
 	rootCmd.AddCommand(setupCmd)
 
+	setupCmd.Flags().StringVar(&setupProviderName, "provider", provider.NameClaudeCode, "Provider to set up (claude-code or codex)")
 	setupCmd.Flags().String("backend-url", "", "Backend API URL (required)")
 	setupCmd.MarkFlagRequired("backend-url")
 	setupCmd.Flags().String("api-key", "", "API key (bypasses device auth flow)")

@@ -23,6 +23,13 @@ a final sync and shut down gracefully.
 When called from a hook, it reads session info from stdin and
 signals the daemon to stop.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		providerName, err := provider.NormalizeName(hookProviderName)
+		if err != nil {
+			return err
+		}
+		if providerName == provider.NameCodex {
+			return codexSessionEndFromHook()
+		}
 		return sessionEndFromHook()
 	},
 }
@@ -61,6 +68,34 @@ func sessionEndFromReader(r io.Reader) error {
 		fmt.Fprintf(os.Stderr, "Note: %v\n", err)
 	} else {
 		fmt.Fprintln(os.Stderr, "Daemon signaled to stop (final sync in background)")
+	}
+
+	return nil
+}
+
+func codexSessionEndFromHook() error {
+	return codexSessionEndFromReader(os.Stdin)
+}
+
+func codexSessionEndFromReader(r io.Reader) error {
+	logger.Info("Stopping Codex dry-run sync daemon (hook mode)")
+
+	defer func() { writeCodexHookResponse(os.Stdout, false, "") }()
+
+	fmt.Fprintln(os.Stderr, "=== Confab: Stopping Codex Dry-Run Sync Daemon ===")
+	fmt.Fprintln(os.Stderr)
+
+	hookInput, err := provider.Codex{}.ReadHookInput(r)
+	if err != nil {
+		logger.ErrorPrint("Error reading Codex hook input: %v", err)
+		return nil
+	}
+
+	if err := daemon.StopDaemonForProvider(provider.NameCodex, hookInput.SessionID, nil); err != nil {
+		logger.Warn("Could not stop Codex daemon: %v", err)
+		fmt.Fprintf(os.Stderr, "Note: %v\n", err)
+	} else {
+		fmt.Fprintln(os.Stderr, "Codex daemon signaled to stop (final dry-run sync in background)")
 	}
 
 	return nil

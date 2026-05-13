@@ -39,6 +39,13 @@ spawns a background daemon process.`,
 		}
 
 		// Otherwise, hook mode (read from stdin and spawn daemon)
+		providerName, err := provider.NormalizeName(hookProviderName)
+		if err != nil {
+			return err
+		}
+		if providerName == provider.NameCodex {
+			return codexSessionStartFromHook()
+		}
 		return sessionStartFromHook()
 	},
 }
@@ -106,6 +113,48 @@ func sessionStartFromReader(r io.Reader) error {
 	return nil
 }
 
+func codexSessionStartFromHook() error {
+	return codexSessionStartFromReader(os.Stdin)
+}
+
+func codexSessionStartFromReader(r io.Reader) error {
+	logger.Info("Starting Codex dry-run sync daemon (hook mode)")
+
+	defer func() { writeCodexHookResponse(os.Stdout, false, "Confab Codex dry-run sync daemon started") }()
+
+	fmt.Fprintln(os.Stderr, "=== Confab: Starting Codex Dry-Run Sync Daemon ===")
+	fmt.Fprintln(os.Stderr)
+
+	hookInput, err := provider.Codex{}.ReadSessionHookInput(r)
+	if err != nil {
+		logger.ErrorPrint("Error reading Codex hook input: %v", err)
+		return nil
+	}
+
+	sessionPrefix := hookInput.SessionID
+	if len(sessionPrefix) > 8 {
+		sessionPrefix = sessionPrefix[:8]
+	}
+	fmt.Fprintf(os.Stderr, "Provider: codex\n")
+	fmt.Fprintf(os.Stderr, "Session:  %s\n", sessionPrefix)
+	fmt.Fprintf(os.Stderr, "Path:     %s\n", hookInput.TranscriptPath)
+	fmt.Fprintln(os.Stderr, "Backend:  dry-run (logged locally)")
+	fmt.Fprintln(os.Stderr)
+
+	spawned, err := maybeSpawnCodexDaemon(hookInput)
+	if err != nil {
+		logger.ErrorPrint("Error spawning Codex daemon: %v", err)
+		return nil
+	}
+	if spawned {
+		fmt.Fprintln(os.Stderr, "Codex dry-run sync daemon started in background")
+	} else {
+		fmt.Fprintln(os.Stderr, "Codex dry-run sync daemon already running")
+	}
+
+	return nil
+}
+
 // parseSyncEnvConfig reads sync configuration from environment variables.
 // Returns the sync interval and jitter to use. Invalid values are ignored
 // and fall back to defaults.
@@ -134,6 +183,26 @@ func parseSyncEnvConfig() (interval, jitter time.Duration) {
 func runDaemon(hookInputJSON string) error {
 	logger.Info("Daemon process starting")
 
+	var launch daemonLaunchInput
+	if err := json.Unmarshal([]byte(hookInputJSON), &launch); err == nil && launch.Provider != "" {
+		providerName, err := provider.NormalizeName(launch.Provider)
+		if err != nil {
+			return err
+		}
+		syncInterval, syncJitter := parseSyncEnvConfig()
+		cfg := daemon.Config{
+			Provider:           providerName,
+			ExternalID:         launch.ExternalID,
+			TranscriptPath:     launch.TranscriptPath,
+			CWD:                launch.CWD,
+			ParentPID:          launch.ParentPID,
+			SyncInterval:       syncInterval,
+			SyncIntervalJitter: syncJitter,
+		}
+		d := daemon.New(cfg)
+		return d.Run(context.Background())
+	}
+
 	var hookInput types.ClaudeHookInput
 	if err := json.Unmarshal([]byte(hookInputJSON), &hookInput); err != nil {
 		return fmt.Errorf("failed to parse hook input: %w", err)
@@ -143,6 +212,7 @@ func runDaemon(hookInputJSON string) error {
 	syncInterval, syncJitter := parseSyncEnvConfig()
 
 	cfg := daemon.Config{
+		Provider:           provider.NameClaudeCode,
 		ExternalID:         hookInput.SessionID,
 		TranscriptPath:     hookInput.TranscriptPath,
 		CWD:                hookInput.CWD,

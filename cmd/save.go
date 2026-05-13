@@ -6,6 +6,7 @@ import (
 
 	"github.com/ConfabulousDev/confab/pkg/config"
 	"github.com/ConfabulousDev/confab/pkg/discovery"
+	"github.com/ConfabulousDev/confab/pkg/provider"
 	"github.com/ConfabulousDev/confab/pkg/sync"
 	"github.com/ConfabulousDev/confab/pkg/utils"
 	"github.com/spf13/cobra"
@@ -24,12 +25,26 @@ Examples:
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer NotifyIfUpdateAvailable()
-		return saveSessionsByID(args)
+		providerName, err := provider.NormalizeName(saveProviderName)
+		if err != nil {
+			return err
+		}
+		return saveSessionsByIDForProvider(providerName, args)
 	},
 }
 
-// saveSessionsByID uploads specific sessions by their IDs
+var saveProviderName string
+
+// saveSessionsByID uploads Claude Code sessions by ID.
 func saveSessionsByID(sessionIDs []string) error {
+	return saveSessionsByIDForProvider(provider.NameClaudeCode, sessionIDs)
+}
+
+func saveSessionsByIDForProvider(providerName string, sessionIDs []string) error {
+	if providerName == provider.NameCodex {
+		return saveCodexSessionsByID(sessionIDs)
+	}
+
 	// Check authentication
 	cfg, err := config.EnsureAuthenticated()
 	if err != nil {
@@ -58,12 +73,60 @@ func saveSessionsByID(sessionIDs []string) error {
 	return nil
 }
 
+func saveCodexSessionsByID(sessionIDs []string) error {
+	codex := provider.Codex{}
+	for _, sessionID := range sessionIDs {
+		fullSessionID, rolloutPath, err := codex.FindSessionByID(sessionID)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			continue
+		}
+
+		info, err := codex.ReadSessionInfo(rolloutPath)
+		cwd := filepath.Dir(rolloutPath)
+		if err == nil && info.CWD != "" {
+			cwd = info.CWD
+		}
+
+		fmt.Printf("Dry-run syncing Codex session %s...\n", utils.TruncateSecret(fullSessionID, 8, 0))
+		result := dryRunSingleCodexSession(fullSessionID, rolloutPath, cwd)
+		if result.Error != nil {
+			fmt.Printf("  Error syncing: %v\n", result.Error)
+			continue
+		}
+		fmt.Printf("  ✓ Dry-run logged locally (%d chunks)\n", result.FilesUploaded)
+	}
+	return nil
+}
+
 // UploadResult contains the result of uploading a single session
 type UploadResult struct {
 	SessionID     string
 	InternalID    string
 	FilesUploaded int
 	Error         error
+}
+
+func dryRunSingleCodexSession(sessionID, rolloutPath, cwd string) UploadResult {
+	result := UploadResult{SessionID: sessionID}
+	engine := sync.NewWithBackend(sync.NewDryRunBackend(provider.NameCodex), nil, sync.EngineConfig{
+		ExternalID:     sessionID,
+		TranscriptPath: rolloutPath,
+		CWD:            cwd,
+	})
+	if err := engine.Init(); err != nil {
+		result.Error = err
+		return result
+	}
+	result.InternalID = engine.SessionID()
+
+	chunks, err := engine.SyncAll()
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	result.FilesUploaded = chunks
+	return result
 }
 
 // uploadSingleSession uploads a session using the sync engine.
@@ -104,5 +167,6 @@ func uploadSingleSession(cfg *config.UploadConfig, sessionID, transcriptPath str
 }
 
 func init() {
+	saveCmd.Flags().StringVar(&saveProviderName, "provider", provider.NameClaudeCode, "Provider to save sessions from (claude-code or codex)")
 	rootCmd.AddCommand(saveCmd)
 }

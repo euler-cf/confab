@@ -1,0 +1,467 @@
+package provider
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/ConfabulousDev/confab/pkg/types"
+)
+
+const CodexStateDirEnv = "CONFAB_CODEX_DIR"
+
+type Codex struct{}
+
+type CodexSessionInfo struct {
+	SessionID      string
+	RolloutPath    string
+	CWD            string
+	Model          string
+	Source         string
+	ThreadSource   string
+	AgentPath      string
+	AgentRole      string
+	AgentNickname  string
+	ModTime        time.Time
+	SizeBytes      int64
+	FirstUserInput string
+}
+
+type codexRolloutLine struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type codexSessionMeta struct {
+	ID            string `json:"id"`
+	CWD           string `json:"cwd"`
+	Model         string `json:"model"`
+	Source        string `json:"source"`
+	ThreadSource  string `json:"thread_source"`
+	AgentPath     string `json:"agent_path"`
+	AgentRole     string `json:"agent_role"`
+	AgentNickname string `json:"agent_nickname"`
+}
+
+var codexRolloutPattern = regexp.MustCompile(`^rollout-.+-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$`)
+
+func (Codex) StateDir() (string, error) {
+	if envDir := os.Getenv(CodexStateDirEnv); envDir != "" {
+		return envDir, nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	return filepath.Join(home, ".codex"), nil
+}
+
+func (p Codex) SessionsDir() (string, error) {
+	stateDir, err := p.StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, "sessions"), nil
+}
+
+func (p Codex) ConfigPath() (string, error) {
+	stateDir, err := p.StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, "config.toml"), nil
+}
+
+func (Codex) SessionIDFromRolloutPath(path string) (string, bool) {
+	matches := codexRolloutPattern.FindStringSubmatch(filepath.Base(path))
+	if matches == nil {
+		return "", false
+	}
+	return matches[1], true
+}
+
+func (p Codex) ScanSessions() ([]CodexSessionInfo, error) {
+	sessionsDir, err := p.SessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	var sessions []CodexSessionInfo
+	err = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		sessionID, ok := p.SessionIDFromRolloutPath(path)
+		if !ok {
+			return nil
+		}
+		info, err := p.ReadSessionInfo(path)
+		if err != nil {
+			return nil
+		}
+		info.SessionID = sessionID
+		if info.IsUserSession() {
+			sessions = append(sessions, info)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk Codex sessions directory: %w", err)
+	}
+	return sessions, nil
+}
+
+func (p Codex) FindSessionByID(partialID string) (string, string, error) {
+	sessionsDir, err := p.SessionsDir()
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
+		return "", "", fmt.Errorf("session not found: %s", partialID)
+	}
+
+	var matches []struct {
+		id   string
+		path string
+	}
+	err = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		sessionID, ok := p.SessionIDFromRolloutPath(path)
+		if !ok {
+			return nil
+		}
+		if sessionID == partialID || strings.HasPrefix(sessionID, partialID) {
+			matches = append(matches, struct {
+				id   string
+				path string
+			}{id: sessionID, path: path})
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to walk Codex sessions directory: %w", err)
+	}
+	if len(matches) == 0 {
+		return "", "", fmt.Errorf("session not found: %s", partialID)
+	}
+	if len(matches) > 1 {
+		return "", "", fmt.Errorf("ambiguous session ID %q matches %d sessions", partialID, len(matches))
+	}
+
+	info, err := p.ReadSessionInfo(matches[0].path)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsUserSession() {
+		return "", "", fmt.Errorf("session not found: %s", partialID)
+	}
+	return matches[0].id, matches[0].path, nil
+}
+
+func (p Codex) ReadSessionInfo(path string) (CodexSessionInfo, error) {
+	if err := p.ValidateRolloutPath(path); err != nil {
+		return CodexSessionInfo{}, err
+	}
+
+	stat, err := os.Stat(path)
+	if err != nil {
+		return CodexSessionInfo{}, err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return CodexSessionInfo{}, err
+	}
+	defer f.Close()
+
+	info := CodexSessionInfo{
+		RolloutPath: path,
+		ModTime:     stat.ModTime(),
+		SizeBytes:   stat.Size(),
+	}
+
+	scanner := types.NewJSONLScanner(f)
+	for scanner.Scan() {
+		var line codexRolloutLine
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			continue
+		}
+		if line.Type != "session_meta" {
+			continue
+		}
+		var meta codexSessionMeta
+		if err := json.Unmarshal(line.Payload, &meta); err != nil {
+			return info, nil
+		}
+		info.CWD = meta.CWD
+		info.Model = meta.Model
+		info.Source = meta.Source
+		info.ThreadSource = meta.ThreadSource
+		info.AgentPath = meta.AgentPath
+		info.AgentRole = meta.AgentRole
+		info.AgentNickname = meta.AgentNickname
+		return info, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return info, fmt.Errorf("failed to scan Codex rollout: %w", err)
+	}
+	return info, nil
+}
+
+func (s CodexSessionInfo) IsUserSession() bool {
+	if s.ThreadSource != "" && s.ThreadSource != "user" {
+		return false
+	}
+	return s.AgentPath == "" && s.AgentRole == "" && s.AgentNickname == ""
+}
+
+func (p Codex) ValidateRolloutPath(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path")
+	}
+	if _, ok := p.SessionIDFromRolloutPath(path); !ok {
+		return fmt.Errorf("must be a Codex rollout JSONL file")
+	}
+
+	sessionsDir, err := p.SessionsDir()
+	if err != nil {
+		return err
+	}
+
+	cleaned := filepath.Clean(path)
+	parentDir := filepath.Dir(cleaned)
+	resolvedParent, parentErr := filepath.EvalSymlinks(parentDir)
+	resolvedPath := ""
+	if parentErr == nil {
+		resolvedPath = filepath.Join(resolvedParent, filepath.Base(cleaned))
+	}
+
+	cleanRoot := filepath.Clean(sessionsDir)
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		resolvedRoot = cleanRoot
+	}
+	if parentErr == nil {
+		if strings.HasPrefix(resolvedPath, resolvedRoot+string(filepath.Separator)) {
+			return nil
+		}
+	} else if strings.HasPrefix(cleaned, cleanRoot+string(filepath.Separator)) {
+		return nil
+	}
+
+	return fmt.Errorf("must be under Codex sessions directory (%s)", sessionsDir)
+}
+
+func (p Codex) ReadHookInput(r io.Reader) (*types.CodexHookInput, error) {
+	data, err := io.ReadAll(io.LimitReader(r, types.MaxJSONLLineSize))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read input: %w", err)
+	}
+	var input types.CodexHookInput
+	if err := json.Unmarshal(data, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse hook input: %w", err)
+	}
+	if input.SessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	if err := types.ValidateSessionID(input.SessionID); err != nil {
+		return nil, err
+	}
+	return &input, nil
+}
+
+func (p Codex) ReadSessionHookInput(r io.Reader) (*types.CodexHookInput, error) {
+	input, err := p.ReadHookInput(r)
+	if err != nil {
+		return nil, err
+	}
+	if input.TranscriptPath == "" {
+		return nil, fmt.Errorf("transcript_path is required")
+	}
+	if err := p.ValidateRolloutPath(input.TranscriptPath); err != nil {
+		return nil, fmt.Errorf("invalid transcript_path: %w", err)
+	}
+	return input, nil
+}
+
+func (p Codex) InstallHooks() (string, error) {
+	configPath, err := p.ConfigPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return "", fmt.Errorf("failed to create Codex state directory: %w", err)
+	}
+
+	var existing []byte
+	if data, err := os.ReadFile(configPath); err == nil {
+		existing = data
+		backupPath := fmt.Sprintf("%s.confab-backup-%s", configPath, time.Now().Format("20060102-150405"))
+		if err := os.WriteFile(backupPath, data, 0600); err != nil {
+			return "", fmt.Errorf("failed to create backup: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to read Codex config: %w", err)
+	}
+
+	binaryPath, err := binaryPath()
+	if err != nil {
+		return "", err
+	}
+
+	updated := ensureCodexHooksConfig(string(existing), binaryPath)
+	if err := writeFileAtomic(configPath, []byte(updated), 0600); err != nil {
+		return "", fmt.Errorf("failed to write Codex config: %w", err)
+	}
+	return configPath, nil
+}
+
+func (p Codex) UninstallHooks() (string, error) {
+	configPath, err := p.ConfigPath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return configPath, nil
+		}
+		return "", fmt.Errorf("failed to read Codex config: %w", err)
+	}
+	backupPath := fmt.Sprintf("%s.confab-backup-%s", configPath, time.Now().Format("20060102-150405"))
+	if err := os.WriteFile(backupPath, data, 0600); err != nil {
+		return "", fmt.Errorf("failed to create backup: %w", err)
+	}
+	updated := removeManagedBlock(string(data), confabCodexHooksStart, confabCodexHooksEnd)
+	if err := writeFileAtomic(configPath, []byte(strings.TrimRight(updated, "\n")+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("failed to write Codex config: %w", err)
+	}
+	return configPath, nil
+}
+
+const confabCodexHooksStart = "# >>> confab codex hooks >>>"
+const confabCodexHooksEnd = "# <<< confab codex hooks <<<"
+
+func ensureCodexHooksConfig(config, binaryPath string) string {
+	config = removeManagedBlock(config, confabCodexHooksStart, confabCodexHooksEnd)
+	config = ensureCodexHooksFeature(config)
+	return appendTOMLBlock(config, confabCodexHooksStart+"\n"+codexHooksTOML(binaryPath)+confabCodexHooksEnd+"\n")
+}
+
+func ensureCodexHooksFeature(config string) string {
+	re := regexp.MustCompile(`(?m)^codex_hooks\s*=\s*false\s*$`)
+	if re.MatchString(config) {
+		return re.ReplaceAllString(config, "codex_hooks = true")
+	}
+	re = regexp.MustCompile(`(?m)^codex_hooks\s*=\s*true\s*$`)
+	if re.MatchString(config) {
+		return config
+	}
+	if strings.Contains(config, "[features]") {
+		lines := strings.Split(config, "\n")
+		for i, line := range lines {
+			if strings.TrimSpace(line) == "[features]" {
+				next := append([]string{}, lines[:i+1]...)
+				next = append(next, "codex_hooks = true")
+				next = append(next, lines[i+1:]...)
+				return strings.Join(next, "\n")
+			}
+		}
+	}
+	return appendTOMLBlock(config, "[features]\ncodex_hooks = true\n")
+}
+
+func appendTOMLBlock(config, block string) string {
+	config = strings.TrimRight(config, "\n")
+	if config == "" {
+		return block
+	}
+	return config + "\n\n" + block
+}
+
+func removeManagedBlock(config, start, end string) string {
+	startIdx := strings.Index(config, start)
+	if startIdx == -1 {
+		return config
+	}
+	endIdx := strings.Index(config[startIdx:], end)
+	if endIdx == -1 {
+		return config
+	}
+	endIdx += startIdx + len(end)
+	for endIdx < len(config) && (config[endIdx] == '\n' || config[endIdx] == '\r') {
+		endIdx++
+	}
+	return strings.TrimRight(config[:startIdx], "\n") + "\n" + config[endIdx:]
+}
+
+func codexHooksTOML(binaryPath string) string {
+	escapedBinaryPath := strings.ReplaceAll(binaryPath, `\`, `\\`)
+	escapedBinaryPath = strings.ReplaceAll(escapedBinaryPath, `"`, `\"`)
+	return fmt.Sprintf(`[[hooks.SessionStart]]
+matcher = "startup|resume|clear"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "%s hook session-start --provider codex"
+statusMessage = "Starting Confab sync"
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "%s hook session-end --provider codex"
+statusMessage = "Stopping Confab sync"
+`, escapedBinaryPath, escapedBinaryPath)
+}
+
+func binaryPath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve executable symlink: %w", err)
+	}
+	return realPath, nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
