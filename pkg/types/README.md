@@ -54,4 +54,4 @@ Factory that creates a `bufio.Scanner` with a 10MB buffer (`MaxJSONLLineSize`). 
 
 **Uses:** standard library only
 
-**Used by:** nearly every package (`cmd/`, `pkg/daemon/`, `pkg/discovery/`, `pkg/sync/`)
+**Used by:** nearly every package (`cmd/`, `pkg/daemon/`, `pkg/git/`, `pkg/provider/`, `pkg/redactor/`, `pkg/sync/`)

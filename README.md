@@ -122,7 +122,8 @@ Codex stores session rollouts under `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CONFAB_CLAUDE_DIR` | `~/.claude` | Override the Claude Code state directory (Codex paths are fixed at `~/.codex/`) |
+| `CONFAB_CLAUDE_DIR` | `~/.claude` | Override the Claude Code state directory |
+| `CONFAB_CODEX_DIR` | `~/.codex` | Override the Codex state directory |
 | `CONFAB_CONFIG_PATH` | `~/.confab/config.json` | Config file location |
 | `CONFAB_LOG_DIR` | `~/.confab/logs` | Log directory |
 
@@ -132,7 +133,7 @@ Each package has a README with extension guides, invariants, and design decision
 
 - [`cmd/`](cmd/README.md) — CLI commands and hook handlers
 - [`pkg/`](pkg/README.md) — Package index and dependency map
-  - [`config`](pkg/config/README.md), [`daemon`](pkg/daemon/README.md), [`git`](pkg/git/README.md), [`http`](pkg/http/README.md), [`logger`](pkg/logger/README.md), [`redactor`](pkg/redactor/README.md), [`sync`](pkg/sync/README.md), [`types`](pkg/types/README.md), [`utils`](pkg/utils/README.md)
+  - [`config`](pkg/config/README.md), [`daemon`](pkg/daemon/README.md), [`git`](pkg/git/README.md), [`hookconfig`](pkg/hookconfig/README.md), [`http`](pkg/http/README.md), [`logger`](pkg/logger/README.md), [`provider`](pkg/provider/README.md), [`redactor`](pkg/redactor/README.md), [`sync`](pkg/sync/README.md), [`types`](pkg/types/README.md), [`utils`](pkg/utils/README.md)
 
 See also [`CLAUDE.md`](CLAUDE.md) for AI-oriented architecture notes and development practices.
 

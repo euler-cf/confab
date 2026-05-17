@@ -95,6 +95,6 @@ go test ./pkg/sync/...
 
 ## Dependencies
 
-**Uses:** `pkg/http`, `pkg/redactor`, `pkg/discovery`, `pkg/git`, `pkg/config`, `pkg/types`, `pkg/logger`
+**Uses:** `pkg/config`, `pkg/git`, `pkg/http`, `pkg/logger`, `pkg/provider`, `pkg/redactor`, `pkg/types`, `pkg/utils`
 
 **Used by:** `pkg/daemon/` (sync loop), `cmd/` (save command, post-tool-use linking)

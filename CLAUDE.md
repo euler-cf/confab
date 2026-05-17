@@ -63,11 +63,13 @@ The backend API lives in the sibling repo `../confab-web`. When implementing CLI
 
 ## Hook System
 
-Confab installs hooks in `~/.claude/settings.json`:
-- `SessionStart`: Runs `confab sync start` to spawn daemon
-- `SessionEnd`: Runs `confab sync stop` to signal graceful shutdown
+Confab installs four hook bundles in `~/.claude/settings.json` (see `pkg/hookconfig/claude.go`):
+- `SessionStart` + `SessionEnd`: spawn / signal-shutdown the sync daemon
+- `PreToolUse` (matchers: `Bash`, `mcp__github__create_pull_request`): injects Confab links into git commits and PR creation
+- `PostToolUse` (same matchers): links resulting GitHub artifacts back to the Confab session
+- `UserPromptSubmit`: re-spawns the daemon if it died between turns
 
-The daemon also monitors its parent PID and shuts down if Claude Code exits unexpectedly.
+The daemon also monitors its parent PID and shuts down if Claude Code exits unexpectedly. For Codex, only `SessionStart` is installed (see Codex provider differences above).
 
 ## Skills
 

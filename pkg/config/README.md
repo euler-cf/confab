@@ -69,4 +69,4 @@ Tests cover atomic settings updates under concurrency, field preservation across
 
 **Uses:** `pkg/logger` (logging). `paths.go` deliberately does not import `pkg/provider` even though it owns parallel constants — `pkg/provider` imports `pkg/hookconfig`, which imports `pkg/config`. The duplicated `ClaudeStateDirEnv` constant must stay in sync between the two packages.
 
-**Used by:** `cmd/` (setup, login, hooks, status), `pkg/daemon/` (state dir), `pkg/discovery/` (paths), `pkg/hookconfig/` (settings struct, atomic update, tool-name constants), `pkg/http/` (upload config), `pkg/provider/` (Claude paths, skills install), `pkg/redactor/` (redaction patterns), `pkg/sync/` (upload config)
+**Used by:** `cmd/` (setup, login, hooks, status), `pkg/daemon/` (state dir), `pkg/hookconfig/` (settings struct, atomic update, tool-name constants), `pkg/http/` (upload config), `pkg/provider/` (Claude paths, skills install), `pkg/redactor/` (redaction patterns), `pkg/sync/` (upload config)

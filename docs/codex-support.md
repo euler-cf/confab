@@ -50,7 +50,7 @@ Current rollout TODOs:
 
 - [ ] Run an end-to-end manual QA cycle against a real `confab-web` backend with `confab setup --provider codex`, Codex hooks, daemon sync, and web transcript viewing.
 - [ ] Update public/user-facing docs once Codex support is ready to advertise.
-- [ ] Clean up compatibility shims after provider ownership is stable: move remaining path and hook parsing callers directly to provider APIs, then remove wrappers that no runtime code needs.
+- [x] Clean up compatibility shims after provider ownership is stable: `pkg/discovery` has been removed; `pkg/config/paths.go` keeps only the real `ClaudeStateDirEnv` constant + `GetClaudeStateDir` (still called from the skills installers in `pkg/config/skill_*.go` and `cmd/skills.go`).
 
 ## Later Checkpoints
 
@@ -100,12 +100,12 @@ Likely backend shape for subagents:
 - Child sessions carry optional relationship metadata such as `parent_external_id`, `thread_source`, `agent_path`, `agent_role`, `agent_nickname`, and depth if available.
 - Backend resolves parent links within the same provider namespace.
 
-## Compatibility Shims (Future Cleanup)
+## Compatibility Shims (Cleaned Up)
 
-These exist only to keep this checkpoint's diff focused. They should be removed in a later checkpoint, once provider usage settles and Claude behavior has not regressed:
+Earlier checkpoints kept a `pkg/discovery` package and several `pkg/config/paths.go` forwarders to `provider.ClaudeCode{}` so the provider-extraction diffs stayed focused. Those shims are gone:
 
-- `pkg/discovery/hook.go` — `ReadHookInputFrom` now forwards to `provider.ClaudeCode{}.ReadSessionHookInput`. Runtime callers have all moved to the provider directly; only `pkg/discovery/hook_test.go` still exercises this wrapper. Remove after one checkpoint of bake time; the `..`-traversal assertion is already covered in `pkg/provider/claude_test.go`.
-- `pkg/config/paths.go` — `GetClaudeStateDir`, `GetProjectsDir`, `GetClaudeSettingsPath`, and the `ClaudeStateDirEnv` constant all forward to `provider.ClaudeCode{}`. Real callers (`cmd/skills.go`, `pkg/config/skill_til.go`, `pkg/config/skill_retro.go`, `pkg/discovery/sessions.go`) should call `provider` directly once the skill and discovery surfaces are moved.
+- `pkg/discovery` was removed entirely; hook parsing and session scanning now live on the provider types (`pkg/provider/claude*.go`, `pkg/provider/codex*.go`).
+- `pkg/config/paths.go` keeps only the real `ClaudeStateDirEnv` constant (mirrored from `pkg/provider/claude.go`, must stay in sync) and `GetClaudeStateDir`, which the skills installers (`cmd/skills.go`, `pkg/config/skill_til.go`, `pkg/config/skill_retro.go`) still call. The previously-forwarded `GetProjectsDir` / `GetClaudeSettingsPath` are gone — call `provider.ClaudeCode{}` directly.
 
 ## Risks
 
